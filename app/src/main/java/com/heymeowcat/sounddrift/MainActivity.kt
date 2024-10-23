@@ -1,7 +1,6 @@
 package com.heymeowcat.sounddrift
 
 import android.Manifest
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,6 +9,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -36,6 +36,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         audioStreamer = AudioStreamer(this)
 
         enableEdgeToEdge()
@@ -52,74 +53,55 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-class AudioStreamer(private val activity: Activity) {
-    private val mediaProjectionManager = activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-    private var mediaProjection: MediaProjection? = null
+class AudioStreamer(private val activity: ComponentActivity) {
     private var isStreaming = false
-    private var audioRecord: AudioRecord? = null
-    private var recordingJob: Job? = null
     private lateinit var socket: Socket
     private var outputStream: OutputStream? = null
-
-    private val sampleRate = 44100
-    private val bufferSize = AudioRecord.getMinBufferSize(
-        sampleRate,
-        AudioFormat.CHANNEL_IN_MONO,
-        AudioFormat.ENCODING_PCM_16BIT
-    )
+    private var recordingJob: Job? = null
 
     fun startProjection(resultCode: Int, data: Intent, serverIp: String) {
-        if (ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.RECORD_AUDIO), 1)
-            return
+        // Start the foreground service
+        val serviceIntent = Intent(activity, MediaProjectionService::class.java).apply {
+            putExtra("resultCode", resultCode)
+            putExtra("data", data)
+            putExtra("serverIp", serverIp)
         }
 
-        mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            activity.startForegroundService(serviceIntent)
+        } else {
+            activity.startService(serviceIntent)
+        }
+
         isStreaming = true
-        startAudioRecording(serverIp)
     }
 
     fun stopStreaming() {
         isStreaming = false
-        mediaProjection?.stop()
+
+        // Stop the foreground service
+        val stopIntent = Intent(activity, MediaProjectionService::class.java).apply {
+            action = "STOP_STREAMING"
+        }
+        activity.stopService(stopIntent)
+
+        // Stop audio recording in the streamer
         stopAudioRecording()
     }
 
-    private fun startAudioRecording(serverIp: String) {
-        if (ActivityCompat.checkSelfPermission(
-                activity,
-                Manifest.permission.RECORD_AUDIO
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                activity,
-                arrayOf(Manifest.permission.RECORD_AUDIO),
-                1
-            )
-        }
-        audioRecord = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize
-        )
 
+    fun startAudioRecording(serverIp: String) {
         recordingJob = CoroutineScope(Dispatchers.IO).launch {
             try {
-                // Connect to the server
                 socket = Socket(serverIp, 12345)
                 outputStream = socket.getOutputStream()
 
-                audioRecord?.startRecording()
-                val buffer = ByteArray(bufferSize)
-
+                // Access and start recording from the MediaProjectionService
+                val audioData = ByteArray(1024) // Adjust buffer size as needed
                 while (isStreaming) {
-                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-                    if (read > 0) {
-                        outputStream?.write(buffer, 0, read)
-                        outputStream?.flush()
-                    }
+                    // ... (Logic to get audio data from MediaProjectionService)
+                    outputStream?.write(audioData)
+                    outputStream?.flush()
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -130,16 +112,12 @@ class AudioStreamer(private val activity: Activity) {
     }
 
     private fun stopAudioRecording() {
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
-
         outputStream?.close()
-        socket.close()
-
+        if (::socket.isInitialized && !socket.isClosed) {
+            socket.close()
+        }
         recordingJob?.cancel()
     }
-
 }
 
 @Composable
@@ -155,7 +133,17 @@ fun MainScreen(
         context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
     }
 
-    val launcher = rememberLauncherForActivityResult(
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            // Audio permission granted
+        } else {
+            // Handle permission denial
+        }
+    }
+
+    val projectionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == ComponentActivity.RESULT_OK) {
@@ -183,7 +171,13 @@ fun MainScreen(
         Button(
             onClick = {
                 if (!isStreaming) {
-                    launcher.launch(mediaProjectionManager.createScreenCaptureIntent())
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+                        == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        projectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+                    } else {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
                 } else {
                     audioStreamer.stopStreaming()
                     isStreaming = false
@@ -194,7 +188,6 @@ fun MainScreen(
             Text(if (isStreaming) "Stop Streaming" else "Start Streaming")
         }
 
-        // Status indicator
         if (isStreaming) {
             Text(
                 "Streaming to: $serverIp",
