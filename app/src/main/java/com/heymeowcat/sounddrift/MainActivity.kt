@@ -25,6 +25,18 @@ import androidx.core.content.ContextCompat
 import com.heymeowcat.sounddrift.ui.theme.SoundDriftTheme
 import kotlinx.coroutines.*
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathFillType
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
 class MainActivity : ComponentActivity() {
     private lateinit var audioStreamer: AudioStreamer
 
@@ -50,6 +62,115 @@ class MainActivity : ComponentActivity() {
         audioStreamer.stopStreaming()
     }
 }
+
+public val Volume_up: ImageVector
+    get() {
+        if (_Volume_up != null) {
+            return _Volume_up!!
+        }
+        _Volume_up = ImageVector.Builder(
+            name = "Volume_up",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 960f,
+            viewportHeight = 960f
+        ).apply {
+            path(
+                fill = SolidColor(Color.Black),
+                fillAlpha = 1.0f,
+                stroke = null,
+                strokeAlpha = 1.0f,
+                strokeLineWidth = 1.0f,
+                strokeLineCap = StrokeCap.Butt,
+                strokeLineJoin = StrokeJoin.Miter,
+                strokeLineMiter = 1.0f,
+                pathFillType = PathFillType.NonZero
+            ) {
+                moveTo(560f, 829f)
+                verticalLineToRelative(-82f)
+                quadToRelative(90f, -26f, 145f, -100f)
+                reflectiveQuadToRelative(55f, -168f)
+                reflectiveQuadToRelative(-55f, -168f)
+                reflectiveQuadToRelative(-145f, -100f)
+                verticalLineToRelative(-82f)
+                quadToRelative(124f, 28f, 202f, 125.5f)
+                reflectiveQuadTo(840f, 479f)
+                reflectiveQuadToRelative(-78f, 224.5f)
+                reflectiveQuadTo(560f, 829f)
+                moveTo(120f, 600f)
+                verticalLineToRelative(-240f)
+                horizontalLineToRelative(160f)
+                lineToRelative(200f, -200f)
+                verticalLineToRelative(640f)
+                lineTo(280f, 600f)
+                close()
+                moveToRelative(440f, 40f)
+                verticalLineToRelative(-322f)
+                quadToRelative(47f, 22f, 73.5f, 66f)
+                reflectiveQuadToRelative(26.5f, 96f)
+                quadToRelative(0f, 51f, -26.5f, 94.5f)
+                reflectiveQuadTo(560f, 640f)
+                moveTo(400f, 354f)
+                lineToRelative(-86f, 86f)
+                horizontalLineTo(200f)
+                verticalLineToRelative(80f)
+                horizontalLineToRelative(114f)
+                lineToRelative(86f, 86f)
+                close()
+                moveTo(300f, 480f)
+            }
+        }.build()
+        return _Volume_up!!
+    }
+
+private var _Volume_up: ImageVector? = null
+
+
+public val Volume_mute: ImageVector
+    get() {
+        if (_Volume_mute != null) {
+            return _Volume_mute!!
+        }
+        _Volume_mute = ImageVector.Builder(
+            name = "Volume_mute",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 960f,
+            viewportHeight = 960f
+        ).apply {
+            path(
+                fill = SolidColor(Color.Black),
+                fillAlpha = 1.0f,
+                stroke = null,
+                strokeAlpha = 1.0f,
+                strokeLineWidth = 1.0f,
+                strokeLineCap = StrokeCap.Butt,
+                strokeLineJoin = StrokeJoin.Miter,
+                strokeLineMiter = 1.0f,
+                pathFillType = PathFillType.NonZero
+            ) {
+                moveTo(280f, 600f)
+                verticalLineToRelative(-240f)
+                horizontalLineToRelative(160f)
+                lineToRelative(200f, -200f)
+                verticalLineToRelative(640f)
+                lineTo(440f, 600f)
+                close()
+                moveToRelative(80f, -80f)
+                horizontalLineToRelative(114f)
+                lineToRelative(86f, 86f)
+                verticalLineToRelative(-252f)
+                lineToRelative(-86f, 86f)
+                horizontalLineTo(360f)
+                close()
+                moveToRelative(100f, -40f)
+            }
+        }.build()
+        return _Volume_mute!!
+    }
+
+private var _Volume_mute: ImageVector? = null
+
 
 class AudioStreamer(private val activity: ComponentActivity) {
     private var mediaProjectionService: MediaProjectionService? = null
@@ -181,9 +302,26 @@ fun MainScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+
+        Text(
+            text = "Sound Drift",
+            style = MaterialTheme.typography.labelLarge.copy(
+                fontWeight = FontWeight.Bold,
+                fontSize = 24.sp
+            ),
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            textAlign = TextAlign.Start
+        )
+
         Card(
             modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh 
+            )
         ) {
             Column(
                 modifier = Modifier
@@ -204,6 +342,29 @@ fun MainScreen(
                     )
                 }
 
+
+                if (isMicEnabled) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Volume_mute,
+                            contentDescription = "Microphone Volume"
+                        )
+                        Slider(
+                            value = 0.5f,
+                            onValueChange = { },
+                            modifier = Modifier.weight(1f)
+                        )
+                        Icon(
+                            imageVector = Volume_up,
+                            contentDescription = "Microphone Volume Max"
+                        )
+                    }
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -215,6 +376,29 @@ fun MainScreen(
                         onCheckedChange = { audioStreamer.setDeviceAudioEnabled(it) },
                         enabled = !isStreaming
                     )
+                }
+
+
+                if (isDeviceAudioEnabled) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Volume_mute,
+                            contentDescription = "Device Volume Min"
+                        )
+                        Slider(
+                            value = 0.5f,
+                            onValueChange = { },
+                            modifier = Modifier.weight(1f)
+                        )
+                        Icon(
+                            imageVector = Volume_up,
+                            contentDescription = "Device Volume Max"
+                        )
+                    }
                 }
 
                 Button(
