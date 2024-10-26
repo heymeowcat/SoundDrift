@@ -185,6 +185,21 @@ class AudioStreamer(private val activity: ComponentActivity) {
     val isDeviceAudioEnabled = _isDeviceAudioEnabled as State<Boolean>
     val isStreaming = _isStreaming as State<Boolean>
 
+    private var _micVolume = mutableStateOf(1f)
+    private var _deviceVolume = mutableStateOf(1f)
+    val micVolume = _micVolume as State<Float>
+    val deviceVolume = _deviceVolume as State<Float>
+
+    fun setMicVolume(volume: Float) {
+        _micVolume.value = volume
+        mediaProjectionService?.setMicVolume(volume)
+    }
+
+    fun setDeviceVolume(volume: Float) {
+        _deviceVolume.value = volume
+        mediaProjectionService?.setDeviceVolume(volume)
+    }
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as MediaProjectionService.LocalBinder
@@ -351,16 +366,19 @@ fun MainScreen(
                     ) {
                         Icon(
                             imageVector = Volume_mute,
-                            contentDescription = "Microphone Volume"
+                            contentDescription = "Microphone Volume",
+                            tint = MaterialTheme.colorScheme.onSurface
                         )
                         Slider(
-                            value = 0.5f,
-                            onValueChange = { },
-                            modifier = Modifier.weight(1f)
+                            value = audioStreamer.micVolume.value,
+                            onValueChange = { audioStreamer.setMicVolume(it) },
+                            modifier = Modifier.weight(1f),
+                            enabled = !isStreaming
                         )
                         Icon(
                             imageVector = Volume_up,
-                            contentDescription = "Microphone Volume Max"
+                            contentDescription = "Microphone Volume Max",
+                            tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -387,16 +405,19 @@ fun MainScreen(
                     ) {
                         Icon(
                             imageVector = Volume_mute,
-                            contentDescription = "Device Volume Min"
+                            contentDescription = "Device Volume Min",
+                            tint = MaterialTheme.colorScheme.onSurface
                         )
                         Slider(
-                            value = 0.5f,
-                            onValueChange = { },
-                            modifier = Modifier.weight(1f)
+                            value = audioStreamer.deviceVolume.value,
+                            onValueChange = { audioStreamer.setDeviceVolume(it) },
+                            modifier = Modifier.weight(1f),
+                            enabled = !isStreaming
                         )
                         Icon(
                             imageVector = Volume_up,
-                            contentDescription = "Device Volume Max"
+                            contentDescription = "Device Volume Max",
+                            tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }

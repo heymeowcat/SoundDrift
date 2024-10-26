@@ -14,9 +14,11 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
+import java.net.DatagramSocket
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.random.Random
 
 class MediaProjectionService : Service() {
 
@@ -31,6 +33,10 @@ class MediaProjectionService : Service() {
     private var clientSocket: Socket? = null
     private var listenerJob: Job? = null
     private var connectedClientIP: String = ""
+    
+    private var micVolume = 1f
+    private var deviceVolume = 1f
+
 
     private val CHANNEL_ID = "SoundDriftServiceChannel"
     private val NOTIFICATION_ID = 1
@@ -52,6 +58,15 @@ class MediaProjectionService : Service() {
         isDeviceAudioEnabled.set(enabled)
         updateAudioRecording()
     }
+
+    fun setMicVolume(volume: Float) {
+        micVolume = volume
+    }
+
+    fun setDeviceVolume(volume: Float) {
+        deviceVolume = volume
+    }
+
 
     inner class LocalBinder : Binder() {
         fun getService(): MediaProjectionService = this@MediaProjectionService
@@ -162,6 +177,7 @@ class MediaProjectionService : Service() {
                     if (isMicEnabled.get() && audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         val micSize = audioRecord?.read(buffer, 0, bufferSize) ?: 0
                         if (micSize > 0) {
+                            applyVolume(buffer, micSize, micVolume)
                             System.arraycopy(buffer, 0, mixBuffer, 0, micSize)
                             totalSize = micSize
                         }
@@ -171,6 +187,7 @@ class MediaProjectionService : Service() {
                     if (isDeviceAudioEnabled.get() && deviceAudioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         val deviceSize = deviceAudioRecord?.read(buffer, 0, bufferSize) ?: 0
                         if (deviceSize > 0) {
+                            applyVolume(buffer, deviceSize, deviceVolume)
                             if (totalSize > 0) {
                                 mixAudio(mixBuffer, buffer, deviceSize)
                             } else {
@@ -199,6 +216,20 @@ class MediaProjectionService : Service() {
             }
         }
     }
+
+
+    private fun applyVolume(buffer: ByteArray, size: Int, volume: Float) {
+        for (i in 0 until size step 2) {
+            if (i + 1 >= size) break
+
+            val sample = (buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)
+            val adjustedSample = (sample * volume).toInt().coerceIn(-32768, 32767)
+
+            buffer[i] = (adjustedSample and 0xFF).toByte()
+            buffer[i + 1] = ((adjustedSample shr 8) and 0xFF).toByte()
+        }
+    }
+
 
     private fun mixAudio(output: ByteArray, input: ByteArray, size: Int) {
         for (i in 0 until size step 2) {
