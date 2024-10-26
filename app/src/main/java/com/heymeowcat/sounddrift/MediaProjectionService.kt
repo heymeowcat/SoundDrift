@@ -14,11 +14,11 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
+import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.ServerSocket
-import java.net.Socket
+import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.random.Random
+import java.util.concurrent.atomic.AtomicLong
 
 class MediaProjectionService : Service() {
 
@@ -26,17 +26,16 @@ class MediaProjectionService : Service() {
     private var audioRecord: AudioRecord? = null
     private var deviceAudioRecord: AudioRecord? = null
     private var recordingJob: Job? = null
+    private var connectionMonitorJob: Job? = null
     private val binder = LocalBinder()
     private var isMicEnabled = AtomicBoolean(false)
     private var isDeviceAudioEnabled = AtomicBoolean(false)
-    private var serverSocket: ServerSocket? = null
-    private var clientSocket: Socket? = null
-    private var listenerJob: Job? = null
-    private var connectedClientIP: String = ""
-    
+    private var rtpSocket: DatagramSocket? = null
     private var micVolume = 1f
     private var deviceVolume = 1f
-
+    private var connectedClientIP: String = ""
+    private var lastPacketTime = AtomicLong(0L)
+    private val CONNECTION_TIMEOUT = 5000L
 
     private val CHANNEL_ID = "SoundDriftServiceChannel"
     private val NOTIFICATION_ID = 1
@@ -67,7 +66,6 @@ class MediaProjectionService : Service() {
         deviceVolume = volume
     }
 
-
     inner class LocalBinder : Binder() {
         fun getService(): MediaProjectionService = this@MediaProjectionService
     }
@@ -76,29 +74,51 @@ class MediaProjectionService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startTcpServer()
-
-        val stopFilter = IntentFilter("STOP_STREAMING")
-        registerReceiver(stopReceiver, stopFilter, RECEIVER_NOT_EXPORTED)
+        startUdpServer()
     }
 
-    private fun startTcpServer() {
-        listenerJob = CoroutineScope(Dispatchers.IO).launch {
+    private fun startUdpServer() {
+        recordingJob = CoroutineScope(Dispatchers.IO).launch {
             try {
-                serverSocket = ServerSocket(12345)
+                rtpSocket = DatagramSocket(55556)
+                println("UDP Server started on port 55556")
+                startConnectionMonitoring()
+
                 while (isActive) {
-                    try {
-                        clientSocket = serverSocket?.accept()
-                        clientSocket?.let { socket ->
-                            connectedClientIP = socket.inetAddress.hostAddress ?: ""
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        delay(1000) // Wait before retrying
-                    }
+                    val receiveBuffer = ByteArray(1024)
+                    val receivePacket = DatagramPacket(receiveBuffer, receiveBuffer.size)
+
+                    println("Waiting for client connection...")
+                    connectedClientIP = ""
+                    stopAudioRecording()
+
+                    rtpSocket?.receive(receivePacket)
+
+                    connectedClientIP = receivePacket.address.hostAddress ?: ""
+                    println("Client connected from: $connectedClientIP")
+
+                    lastPacketTime.set(System.currentTimeMillis())
+                    updateAudioRecording()
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
+            }
+        }
+    }
+
+    private fun startConnectionMonitoring() {
+        connectionMonitorJob?.cancel()
+        connectionMonitorJob = CoroutineScope(Dispatchers.IO).launch {
+            while (isActive) {
+                if (connectedClientIP.isNotEmpty()) {
+                    val timeSinceLastPacket = System.currentTimeMillis() - lastPacketTime.get()
+                    if (timeSinceLastPacket > CONNECTION_TIMEOUT) {
+                        println("Client connection timed out")
+                        connectedClientIP = ""
+                        stopAudioRecording()
+                    }
+                }
+                delay(1000)
             }
         }
     }
@@ -136,7 +156,6 @@ class MediaProjectionService : Service() {
     private fun startMediaProjection(resultCode: Int, data: Intent) {
         val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
-        updateAudioRecording()
     }
 
     private fun createNotificationChannel() {
@@ -158,22 +177,22 @@ class MediaProjectionService : Service() {
             if (isDeviceAudioEnabled.get() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startDeviceAudioCapture()
             }
-            startAudioRecording()
+            startAudioStreaming()
         }
     }
 
-    private fun startAudioRecording() {
+    private fun startAudioStreaming() {
         if (!isMicEnabled.get() && !isDeviceAudioEnabled.get()) return
 
         recordingJob = CoroutineScope(Dispatchers.IO).launch {
             val buffer = ByteArray(bufferSize)
             val mixBuffer = ByteArray(bufferSize)
+            var packetCount = 0L
 
             try {
-                while (isActive) {
+                while (isActive && connectedClientIP.isNotEmpty()) {
                     var totalSize = 0
 
-                    // Read from mic if enabled
                     if (isMicEnabled.get() && audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         val micSize = audioRecord?.read(buffer, 0, bufferSize) ?: 0
                         if (micSize > 0) {
@@ -183,7 +202,6 @@ class MediaProjectionService : Service() {
                         }
                     }
 
-                    // Read from device if enabled
                     if (isDeviceAudioEnabled.get() && deviceAudioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         val deviceSize = deviceAudioRecord?.read(buffer, 0, bufferSize) ?: 0
                         if (deviceSize > 0) {
@@ -197,26 +215,36 @@ class MediaProjectionService : Service() {
                         }
                     }
 
-                    // Stream the audio if we have data and client is connected
-                    if (totalSize > 0 && clientSocket?.isConnected == true) {
+                    if (totalSize > 0) {
                         try {
-                            clientSocket?.getOutputStream()?.write(mixBuffer, 0, totalSize)
+                            val packet = DatagramPacket(
+                                mixBuffer,
+                                totalSize,
+                                InetAddress.getByName(connectedClientIP),
+                                55555
+                            )
+                            rtpSocket?.send(packet)
+                            lastPacketTime.set(System.currentTimeMillis())
+
+                            packetCount++
+                            if (packetCount % 100 == 0L) {
+                                println("Sent packet #$packetCount, size: $totalSize bytes")
+                            }
                         } catch (e: Exception) {
-                            e.printStackTrace()
-                            clientSocket?.close()
-                            clientSocket = null
+                            println("Error sending audio packet: ${e.message}")
                             connectedClientIP = ""
+                            break
                         }
                     } else {
-                        delay(10) // Prevent tight loop if no data
+                        delay(10)
                     }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
+                connectedClientIP = ""
             }
         }
     }
-
 
     private fun applyVolume(buffer: ByteArray, size: Int, volume: Float) {
         for (i in 0 until size step 2) {
@@ -230,7 +258,6 @@ class MediaProjectionService : Service() {
         }
     }
 
-
     private fun mixAudio(output: ByteArray, input: ByteArray, size: Int) {
         for (i in 0 until size step 2) {
             if (i + 1 >= size) break
@@ -238,7 +265,6 @@ class MediaProjectionService : Service() {
             val sample1 = (output[i + 1].toInt() shl 8) or (output[i].toInt() and 0xFF)
             val sample2 = (input[i + 1].toInt() shl 8) or (input[i].toInt() and 0xFF)
 
-            // Mix samples and prevent clipping
             val mixed = ((sample1.toLong() + sample2.toLong()) / 2).toInt().coerceIn(-32768, 32767)
 
             output[i] = (mixed and 0xFF).toByte()
@@ -281,9 +307,6 @@ class MediaProjectionService : Service() {
             val config = AudioPlaybackCaptureConfiguration.Builder(mediaProjection!!)
                 .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                 .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                .addMatchingUsage(AudioAttributes.USAGE_ALARM)
-                .addMatchingUsage(AudioAttributes.USAGE_NOTIFICATION)
                 .build()
 
             val audioFormat = AudioFormat.Builder()
@@ -299,6 +322,7 @@ class MediaProjectionService : Service() {
             ) {
                 return
             }
+
             deviceAudioRecord = AudioRecord.Builder()
                 .setAudioFormat(audioFormat)
                 .setBufferSizeInBytes(bufferSize)
@@ -319,52 +343,32 @@ class MediaProjectionService : Service() {
     }
 
     private fun stopAudioRecording() {
+        audioRecord?.apply {
+            stop()
+            release()
+        }
+        audioRecord = null
+
+        deviceAudioRecord?.apply {
+            stop()
+            release()
+        }
+        deviceAudioRecord = null
+
         recordingJob?.cancel()
         recordingJob = null
-
-        audioRecord?.let {
-            try {
-                if (it.state == AudioRecord.STATE_INITIALIZED) {
-                    it.stop()
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
-                it.release()
-                audioRecord = null
-            }
-        }
-
-        deviceAudioRecord?.let {
-            try {
-                if (it.state == AudioRecord.STATE_INITIALIZED) {
-                    it.stop()
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
-                it.release()
-                deviceAudioRecord = null
-            }
-        }
     }
 
-    override fun onBind(intent: Intent?): IBinder {
+    override fun onBind(intent: Intent?): IBinder? {
         return binder
     }
 
     override fun onDestroy() {
+        connectionMonitorJob?.cancel()
         stopAudioRecording()
-        listenerJob?.cancel()
-        serverSocket?.close()
-        clientSocket?.close()
-        unregisterReceiver(stopReceiver)
+        mediaProjection?.stop()
+        mediaProjection = null
+        rtpSocket?.close()
         super.onDestroy()
-    }
-
-    private val stopReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            stopSelf()
-        }
     }
 }
