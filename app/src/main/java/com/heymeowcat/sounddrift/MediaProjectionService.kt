@@ -14,11 +14,17 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
+import org.json.JSONObject
+import java.io.ObjectOutputStream
+import java.io.PrintWriter
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.ServerSocket
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.ConcurrentLinkedQueue
+import kotlin.math.roundToLong
 
 class MediaProjectionService : Service() {
 
@@ -31,18 +37,24 @@ class MediaProjectionService : Service() {
     private var isMicEnabled = AtomicBoolean(false)
     private var isDeviceAudioEnabled = AtomicBoolean(false)
     private var rtpSocket: DatagramSocket? = null
+    private var tcpServer: ServerSocket? = null
+    private var tcpWriter: PrintWriter? = null
     private var micVolume = 1f
     private var deviceVolume = 1f
     private var connectedClientIP: String = ""
     private var lastPacketTime = AtomicLong(0L)
     private val CONNECTION_TIMEOUT = 5000L
 
+    private val latencyMeasurements = ConcurrentLinkedQueue<Long>()
+    private var maxLatency = 0L
+
     private val CHANNEL_ID = "SoundDriftServiceChannel"
     private val NOTIFICATION_ID = 1
     private val sampleRate = 44100
+    private val channelConfig = AudioFormat.CHANNEL_IN_STEREO
     private val bufferSize = AudioRecord.getMinBufferSize(
         sampleRate,
-        AudioFormat.CHANNEL_IN_MONO,
+        channelConfig,
         AudioFormat.ENCODING_PCM_16BIT
     )
 
@@ -51,19 +63,47 @@ class MediaProjectionService : Service() {
     fun setMicEnabled(enabled: Boolean) {
         isMicEnabled.set(enabled)
         updateAudioRecording()
+        sendMetadata()
     }
 
     fun setDeviceAudioEnabled(enabled: Boolean) {
         isDeviceAudioEnabled.set(enabled)
         updateAudioRecording()
+        sendMetadata()
     }
 
     fun setMicVolume(volume: Float) {
         micVolume = volume
+        sendMetadata()
     }
 
     fun setDeviceVolume(volume: Float) {
         deviceVolume = volume
+        sendMetadata()
+    }
+
+    private fun sendMetadata() {
+        try {
+            val metadata = JSONObject().apply {
+                put("deviceName", Build.MODEL)
+                put("averageLatency", getAverageLatency())
+                put("maxLatency", maxLatency)
+                put("bufferMs", (bufferSize * 1000 / (sampleRate * 4))) // 4 bytes per sample in stereo
+                put("micVolume", micVolume)
+                put("deviceVolume", deviceVolume)
+                put("isMicEnabled", isMicEnabled.get())
+                put("isDeviceAudioEnabled", isDeviceAudioEnabled.get())
+            }
+            tcpWriter?.println(metadata.toString())
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun getAverageLatency(): Long {
+        return if (latencyMeasurements.isNotEmpty()) {
+            latencyMeasurements.average().roundToLong()
+        } else 0L
     }
 
     inner class LocalBinder : Binder() {
@@ -74,10 +114,28 @@ class MediaProjectionService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startUdpServer()
+        startServers()
     }
 
-    private fun startUdpServer() {
+    private fun startServers() {
+        // Start TCP Server
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                tcpServer = ServerSocket(55557)
+                println("TCP Server started on port 55557")
+
+                while (isActive) {
+                    val client = tcpServer?.accept() ?: continue
+                    tcpWriter = PrintWriter(client.getOutputStream(), true) // auto-flush
+                    println("TCP Client connected from: ${client.inetAddress.hostAddress}")
+                    sendMetadata()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        // Start UDP Server
         recordingJob = CoroutineScope(Dispatchers.IO).launch {
             try {
                 rtpSocket = DatagramSocket(55556)
@@ -95,7 +153,7 @@ class MediaProjectionService : Service() {
                     rtpSocket?.receive(receivePacket)
 
                     connectedClientIP = receivePacket.address.hostAddress ?: ""
-                    println("Client connected from: $connectedClientIP")
+                    println("UDP Client connected from: $connectedClientIP")
 
                     lastPacketTime.set(System.currentTimeMillis())
                     updateAudioRecording()
@@ -179,6 +237,7 @@ class MediaProjectionService : Service() {
             }
             startAudioStreaming()
         }
+        sendMetadata()
     }
 
     private fun startAudioStreaming() {
@@ -191,12 +250,12 @@ class MediaProjectionService : Service() {
 
             try {
                 while (isActive && connectedClientIP.isNotEmpty()) {
+                    val startTime = System.nanoTime()
                     var totalSize = 0
 
                     if (isMicEnabled.get() && audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         val micSize = audioRecord?.read(buffer, 0, bufferSize) ?: 0
                         if (micSize > 0) {
-                            applyVolume(buffer, micSize, micVolume)
                             System.arraycopy(buffer, 0, mixBuffer, 0, micSize)
                             totalSize = micSize
                         }
@@ -205,9 +264,8 @@ class MediaProjectionService : Service() {
                     if (isDeviceAudioEnabled.get() && deviceAudioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         val deviceSize = deviceAudioRecord?.read(buffer, 0, bufferSize) ?: 0
                         if (deviceSize > 0) {
-                            applyVolume(buffer, deviceSize, deviceVolume)
                             if (totalSize > 0) {
-                                mixAudio(mixBuffer, buffer, deviceSize)
+                                mixStereoAudio(mixBuffer, buffer, deviceSize)
                             } else {
                                 System.arraycopy(buffer, 0, mixBuffer, 0, deviceSize)
                                 totalSize = deviceSize
@@ -224,11 +282,18 @@ class MediaProjectionService : Service() {
                                 55555
                             )
                             rtpSocket?.send(packet)
-                            lastPacketTime.set(System.currentTimeMillis())
 
+                            // Calculate and update latency
+                            val endTime = System.nanoTime()
+                            val latency = (endTime - startTime) / 1_000_000 // Convert to ms
+                            updateLatencyMetrics(latency)
+
+                            lastPacketTime.set(System.currentTimeMillis())
                             packetCount++
+
                             if (packetCount % 100 == 0L) {
                                 println("Sent packet #$packetCount, size: $totalSize bytes")
+                                sendMetadata() // Update client with latest metrics periodically
                             }
                         } catch (e: Exception) {
                             println("Error sending audio packet: ${e.message}")
@@ -246,29 +311,33 @@ class MediaProjectionService : Service() {
         }
     }
 
-    private fun applyVolume(buffer: ByteArray, size: Int, volume: Float) {
-        for (i in 0 until size step 2) {
-            if (i + 1 >= size) break
-
-            val sample = (buffer[i + 1].toInt() shl 8) or (buffer[i].toInt() and 0xFF)
-            val adjustedSample = (sample * volume).toInt().coerceIn(-32768, 32767)
-
-            buffer[i] = (adjustedSample and 0xFF).toByte()
-            buffer[i + 1] = ((adjustedSample shr 8) and 0xFF).toByte()
+    private fun updateLatencyMetrics(latency: Long) {
+        latencyMeasurements.offer(latency)
+        if (latencyMeasurements.size > 100) {
+            latencyMeasurements.poll()
         }
+        maxLatency = maxOf(maxLatency, latency)
     }
 
-    private fun mixAudio(output: ByteArray, input: ByteArray, size: Int) {
-        for (i in 0 until size step 2) {
-            if (i + 1 >= size) break
+    private fun mixStereoAudio(output: ByteArray, input: ByteArray, size: Int) {
+        for (i in 0 until size step 4) {  // 4 bytes per frame (2 channels × 2 bytes per sample)
+            if (i + 3 >= size) break
 
-            val sample1 = (output[i + 1].toInt() shl 8) or (output[i].toInt() and 0xFF)
-            val sample2 = (input[i + 1].toInt() shl 8) or (input[i].toInt() and 0xFF)
+            // Mix left channel
+            val leftSample1 = (output[i + 1].toInt() shl 8) or (output[i].toInt() and 0xFF)
+            val leftSample2 = (input[i + 1].toInt() shl 8) or (input[i].toInt() and 0xFF)
+            val mixedLeft = ((leftSample1.toLong() + leftSample2.toLong()) / 2).toInt().coerceIn(-32768, 32767)
 
-            val mixed = ((sample1.toLong() + sample2.toLong()) / 2).toInt().coerceIn(-32768, 32767)
+            // Mix right channel
+            val rightSample1 = (output[i + 3].toInt() shl 8) or (output[i + 2].toInt() and 0xFF)
+            val rightSample2 = (input[i + 3].toInt() shl 8) or (input[i + 2].toInt() and 0xFF)
+            val mixedRight = ((rightSample1.toLong() + rightSample2.toLong()) / 2).toInt().coerceIn(-32768, 32767)
 
-            output[i] = (mixed and 0xFF).toByte()
-            output[i + 1] = ((mixed shr 8) and 0xFF).toByte()
+            // Write mixed samples
+            output[i] = (mixedLeft and 0xFF).toByte()
+            output[i + 1] = ((mixedLeft shr 8) and 0xFF).toByte()
+            output[i + 2] = (mixedRight and 0xFF).toByte()
+            output[i + 3] = ((mixedRight shr 8) and 0xFF).toByte()
         }
     }
 
@@ -281,7 +350,7 @@ class MediaProjectionService : Service() {
             audioRecord = AudioRecord(
                 MediaRecorder.AudioSource.MIC,
                 sampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
+                channelConfig,
                 AudioFormat.ENCODING_PCM_16BIT,
                 bufferSize
             ).apply {
@@ -312,7 +381,7 @@ class MediaProjectionService : Service() {
             val audioFormat = AudioFormat.Builder()
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setSampleRate(sampleRate)
-                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                .setChannelMask(channelConfig)
                 .build()
 
             if (ActivityCompat.checkSelfPermission(
@@ -369,6 +438,10 @@ class MediaProjectionService : Service() {
         mediaProjection?.stop()
         mediaProjection = null
         rtpSocket?.close()
+        tcpWriter?.close()
+        tcpServer?.close()
+        tcpServer = null
+        latencyMeasurements.clear()
         super.onDestroy()
     }
 }
