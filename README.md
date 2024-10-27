@@ -28,7 +28,7 @@ This project consists of two components:
  3. Build and run the app on your device. 
  
 ### Client  [SoundDrift Player Client](https://github.com/heymeowcat/SoundDriftPlayer)
-1. Navigate to the `client` url 
+1. Clone the repository `git clone https://github.com/heymeowcat/SoundDriftPlayer.git`
 2. Install dependencies: `npm install` 
 3. Start the Electron app: `npm start` 
 
