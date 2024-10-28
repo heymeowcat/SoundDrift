@@ -257,8 +257,16 @@ class MediaProjectionService : Service() {
                     if (isMicEnabled.get() && audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                         val micSize = audioRecord?.read(buffer, 0, bufferSize) ?: 0
                         if (micSize > 0) {
-                            System.arraycopy(buffer, 0, mixBuffer, 0, micSize)
-                            totalSize = micSize
+                            if (isDeviceAudioEnabled.get()) {
+                                // If both sources are enabled, copy to mix buffer for later mixing
+                                System.arraycopy(buffer, 0, mixBuffer, 0, micSize)
+                                totalSize = micSize
+                            } else {
+                                // If only mic is enabled, apply volume directly
+                                applyStereoVolume(buffer, buffer, micSize, micVolume)
+                                System.arraycopy(buffer, 0, mixBuffer, 0, micSize)
+                                totalSize = micSize
+                            }
                         }
                     }
 
@@ -266,9 +274,11 @@ class MediaProjectionService : Service() {
                         val deviceSize = deviceAudioRecord?.read(buffer, 0, bufferSize) ?: 0
                         if (deviceSize > 0) {
                             if (totalSize > 0) {
+                                // Both sources enabled, mix them
                                 mixStereoAudio(mixBuffer, buffer, deviceSize)
                             } else {
-                                System.arraycopy(buffer, 0, mixBuffer, 0, deviceSize)
+                                // Only device audio enabled, apply volume directly
+                                applyStereoVolume(buffer, mixBuffer, deviceSize, deviceVolume)
                                 totalSize = deviceSize
                             }
                         }
@@ -312,6 +322,26 @@ class MediaProjectionService : Service() {
         }
     }
 
+    private fun applyStereoVolume(input: ByteArray, output: ByteArray, size: Int, volume: Float) {
+        for (i in 0 until size step 4) {
+            if (i + 3 >= size) break
+
+            // Left channel
+            val leftSample = (input[i + 1].toInt() shl 8) or (input[i].toInt() and 0xFF)
+            val scaledLeft = (leftSample.toFloat() / 32768.0f * volume * 32768.0f).toInt().coerceIn(-32768, 32767)
+
+            // Right channel
+            val rightSample = (input[i + 3].toInt() shl 8) or (input[i + 2].toInt() and 0xFF)
+            val scaledRight = (rightSample.toFloat() / 32768.0f * volume * 32768.0f).toInt().coerceIn(-32768, 32767)
+
+            // Write scaled samples
+            output[i] = (scaledLeft and 0xFF).toByte()
+            output[i + 1] = ((scaledLeft shr 8) and 0xFF).toByte()
+            output[i + 2] = (scaledRight and 0xFF).toByte()
+            output[i + 3] = ((scaledRight shr 8) and 0xFF).toByte()
+        }
+    }
+
     private fun updateLatencyMetrics(latency: Long) {
         latencyMeasurements.offer(latency)
         if (latencyMeasurements.size > 100) {
@@ -321,18 +351,25 @@ class MediaProjectionService : Service() {
     }
 
     private fun mixStereoAudio(output: ByteArray, input: ByteArray, size: Int) {
-        for (i in 0 until size step 4) {  // 4 bytes per frame (2 channels × 2 bytes per sample)
+        for (i in 0 until size step 4) {
             if (i + 3 >= size) break
 
-            // Mix left channel
+            // Left channel
             val leftSample1 = (output[i + 1].toInt() shl 8) or (output[i].toInt() and 0xFF)
             val leftSample2 = (input[i + 1].toInt() shl 8) or (input[i].toInt() and 0xFF)
-            val mixedLeft = ((leftSample1.toLong() + leftSample2.toLong()) / 2).toInt().coerceIn(-32768, 32767)
 
-            // Mix right channel
+            // Convert to float for better precision in mixing
+            val leftFloat1 = leftSample1.toFloat() / 32768.0f * micVolume
+            val leftFloat2 = leftSample2.toFloat() / 32768.0f * deviceVolume
+            val mixedLeft = ((leftFloat1 + leftFloat2) * 32768.0f).toInt().coerceIn(-32768, 32767)
+
+            // Right channel
             val rightSample1 = (output[i + 3].toInt() shl 8) or (output[i + 2].toInt() and 0xFF)
             val rightSample2 = (input[i + 3].toInt() shl 8) or (input[i + 2].toInt() and 0xFF)
-            val mixedRight = ((rightSample1.toLong() + rightSample2.toLong()) / 2).toInt().coerceIn(-32768, 32767)
+
+            val rightFloat1 = rightSample1.toFloat() / 32768.0f * micVolume
+            val rightFloat2 = rightSample2.toFloat() / 32768.0f * deviceVolume
+            val mixedRight = ((rightFloat1 + rightFloat2) * 32768.0f).toInt().coerceIn(-32768, 32767)
 
             // Write mixed samples
             output[i] = (mixedLeft and 0xFF).toByte()

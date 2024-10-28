@@ -185,18 +185,18 @@ class AudioStreamer(private val activity: ComponentActivity) {
     val isDeviceAudioEnabled = _isDeviceAudioEnabled as State<Boolean>
     val isStreaming = _isStreaming as State<Boolean>
 
-    private var _micVolume = mutableStateOf(1f)
-    private var _deviceVolume = mutableStateOf(1f)
+    private var _micVolume = mutableFloatStateOf(1f)
+    private var _deviceVolume = mutableFloatStateOf(1f)
     val micVolume = _micVolume as State<Float>
     val deviceVolume = _deviceVolume as State<Float>
 
     fun setMicVolume(volume: Float) {
-        _micVolume.value = volume
+        _micVolume.floatValue = volume
         mediaProjectionService?.setMicVolume(volume)
     }
 
     fun setDeviceVolume(volume: Float) {
-        _deviceVolume.value = volume
+        _deviceVolume.floatValue = volume
         mediaProjectionService?.setDeviceVolume(volume)
     }
 
@@ -209,6 +209,8 @@ class AudioStreamer(private val activity: ComponentActivity) {
             mediaProjectionService?.apply {
                 setMicEnabled(_isMicEnabled.value)
                 setDeviceAudioEnabled(_isDeviceAudioEnabled.value)
+                setMicVolume(_micVolume.floatValue)
+                setDeviceVolume(_deviceVolume.floatValue)
             }
 
             _isStreaming.value = true
@@ -228,9 +230,9 @@ class AudioStreamer(private val activity: ComponentActivity) {
             while (isActive) {
                 val clientIP = mediaProjectionService?.getConnectedClientIP() ?: ""
                 _connectionStatus.value = if (clientIP.isNotEmpty()) {
-                    "Streaming active ($clientIP connected)"
+                    "Streaming active \n($clientIP connected)"
                 } else {
-                    "Streaming active (waiting for connection...)"
+                    "Streaming active \n(waiting for connection...)"
                 }
                 delay(1000) // Update every second
             }
@@ -310,6 +312,9 @@ fun MainScreen(
         }
     }
 
+    var micSliderPosition by remember { mutableFloatStateOf(audioStreamer.micVolume.value) }
+    var deviceSliderPosition by remember { mutableFloatStateOf(audioStreamer.deviceVolume.value) }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -370,8 +375,11 @@ fun MainScreen(
                             tint = MaterialTheme.colorScheme.onSurface
                         )
                         Slider(
-                            value = audioStreamer.micVolume.value,
-                            onValueChange = { audioStreamer.setMicVolume(it) },
+                            value = micSliderPosition,
+                            onValueChange = {
+                                micSliderPosition = it
+                                audioStreamer.setMicVolume(it)
+                            },
                             modifier = Modifier.weight(1f),
                             enabled = !isStreaming
                         )
@@ -409,8 +417,11 @@ fun MainScreen(
                             tint = MaterialTheme.colorScheme.onSurface
                         )
                         Slider(
-                            value = audioStreamer.deviceVolume.value,
-                            onValueChange = { audioStreamer.setDeviceVolume(it) },
+                            value = deviceSliderPosition,
+                            onValueChange = {
+                                deviceSliderPosition = it
+                                audioStreamer.setDeviceVolume(it)
+                            },
                             modifier = Modifier.weight(1f),
                             enabled = !isStreaming
                         )
@@ -447,10 +458,25 @@ fun MainScreen(
         }
 
         if (connectionStatus.isNotEmpty()) {
-            Text(
-                connectionStatus,
-                color = MaterialTheme.colorScheme.primary
-            )
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        connectionStatus,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+
         }
     }
 }
