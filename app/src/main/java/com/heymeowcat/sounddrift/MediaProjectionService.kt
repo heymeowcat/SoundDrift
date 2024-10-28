@@ -14,6 +14,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
+import org.json.JSONException
 import org.json.JSONObject
 import java.io.ObjectOutputStream
 import java.io.PrintWriter
@@ -21,6 +22,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -42,6 +44,7 @@ class MediaProjectionService : Service() {
     private var micVolume = 1f
     private var deviceVolume = 1f
     private var connectedClientIP: String = ""
+    private var connectedClientDeviceName: String = ""
     private var lastPacketTime = AtomicLong(0L)
     private val CONNECTION_TIMEOUT = 5000L
 
@@ -59,6 +62,9 @@ class MediaProjectionService : Service() {
     )
 
     fun getConnectedClientIP(): String = connectedClientIP
+    fun getConnectedClientDeviceName(): String = connectedClientDeviceName
+
+
 
     fun setMicEnabled(enabled: Boolean) {
         isMicEnabled.set(enabled)
@@ -150,14 +156,35 @@ class MediaProjectionService : Service() {
                     connectedClientIP = ""
                     stopAudioRecording()
 
+                    // Receive the initial connection packet
                     rtpSocket?.receive(receivePacket)
-
                     connectedClientIP = receivePacket.address.hostAddress ?: ""
                     println("UDP Client connected from: $connectedClientIP")
+
+                    // Now receive and process device info
+                    rtpSocket?.receive(receivePacket) // Receive device info
+                    val receivedData = receivePacket.data.copyOf(receivePacket.length)
+                    val receivedText = String(receivedData, StandardCharsets.UTF_8)
+
+                    if (receivedText.startsWith("{") && receivedText.endsWith("}")) {
+                        try {
+                            val deviceInfo = JSONObject(receivedText)
+
+                            connectedClientDeviceName = deviceInfo.getString("deviceName")
+                            println("Device Name: $connectedClientDeviceName")
+
+                        } catch (e: JSONException) {
+                            println("Error parsing device info JSON: ${e.message}")
+                        }
+                    } else {
+                        println("Invalid device info format received.")
+                    }
 
                     lastPacketTime.set(System.currentTimeMillis())
                     updateAudioRecording()
                 }
+
+
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -285,6 +312,7 @@ class MediaProjectionService : Service() {
                     }
 
                     if (totalSize > 0) {
+                        println("startAudioStreaming() - connectedClientIP: $connectedClientIP") // Add this line
                         try {
                             val packet = DatagramPacket(
                                 mixBuffer,

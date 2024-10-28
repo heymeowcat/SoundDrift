@@ -229,8 +229,10 @@ class AudioStreamer(private val activity: ComponentActivity) {
         updateJob = CoroutineScope(Dispatchers.Main).launch {
             while (isActive) {
                 val clientIP = mediaProjectionService?.getConnectedClientIP() ?: ""
+                val clientDeviceName = mediaProjectionService?.getConnectedClientDeviceName() ?: ""
+
                 _connectionStatus.value = if (clientIP.isNotEmpty()) {
-                    "Streaming active \n($clientIP connected)"
+                    "Streaming active \n$clientDeviceName \n($clientIP connected)"
                 } else {
                     "Streaming active \n(waiting for connection...)"
                 }
