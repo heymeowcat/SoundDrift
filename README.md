@@ -5,10 +5,10 @@ Real-time Audio Streaming from Android to Your Desktop SoundDrift lets you strea
 
 ## Features
 
-**Low-Latency Streaming:** Experience minimal delay, perfect for real-time audio sharing. 
-**Metadata Display:** The client displays device information, latency, and buffer statistics for monitoring stream health. - 
-**Microphone & Device Audio:** Stream from your microphone, device audio, or both simultaneously.
-**Individual Volume Control:** Adjust the volume of your microphone and device audio independently. 
+1. **Low-Latency Streaming:** Experience minimal delay, perfect for real-time audio sharing. 
+2. **Metadata Display:** The client displays device information, latency, and buffer statistics for monitoring stream health. - 
+3. **Microphone & Device Audio:** Stream from your microphone, device audio, or both simultaneously.
+4. **Individual Volume Control:** Adjust the volume of your microphone and device audio independently. 
 
 ## Architecture 
 
