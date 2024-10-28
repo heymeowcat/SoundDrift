@@ -1,5 +1,7 @@
-# SoundDrift: 
-Real-time Audio Streaming from Android to Your Desktop SoundDrift lets you stream audio from your Android device directly to your desktop in  real-time. 
+# SoundDrift
+Real-time Audio Streaming from Android to Your Desktop SoundDrift lets you stream audio from your Android device directly to your desktop in  real-time.
+
+<img src="https://github.com/user-attachments/assets/117ffebd-0cda-413a-8aa7-2a3f9da04fd5" width="300"/>
 
 ## Features
 
