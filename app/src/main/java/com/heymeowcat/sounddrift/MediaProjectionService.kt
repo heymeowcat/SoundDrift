@@ -22,6 +22,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -124,17 +125,40 @@ class MediaProjectionService : Service() {
     }
 
     private fun startServers() {
+
+        var tempConnectedDeviceName=""
         // Start TCP Server
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                tcpServer = ServerSocket(55557)
+                val tcpServer = ServerSocket(55557)
                 println("TCP Server started on port 55557")
 
                 while (isActive) {
-                    val client = tcpServer?.accept() ?: continue
-                    tcpWriter = PrintWriter(client.getOutputStream(), true) // auto-flush
+                    val client = tcpServer.accept()
                     println("TCP Client connected from: ${client.inetAddress.hostAddress}")
-                    sendMetadata()
+                    connectedClientDeviceName = tempConnectedDeviceName
+
+                    tcpWriter = PrintWriter(client.getOutputStream(), true)
+
+                    // coroutine to handle the client connection
+                    launch {
+                        val tcpReader = client.getInputStream().bufferedReader()
+                        try {
+                            sendMetadata()
+                            // Loop to keep checking client connection
+                            while (isActive && !client.isClosed) {
+                                val message = tcpReader.readLine()
+                                if (message == null) {
+                                    println("TCP Client disconnected")
+                                    connectedClientDeviceName = "";
+                                    break
+                                }
+                                println("Received message from client: $message")
+                            }
+                        } catch (e: Exception) {
+                            println("Error with client connection: ${e.message}")
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -154,6 +178,7 @@ class MediaProjectionService : Service() {
 
                     println("Waiting for client connection...")
                     connectedClientIP = ""
+                    connectedClientDeviceName = ""
                     stopAudioRecording()
 
                     // Receive the initial connection packet
@@ -166,11 +191,13 @@ class MediaProjectionService : Service() {
                     val receivedData = receivePacket.data.copyOf(receivePacket.length)
                     val receivedText = String(receivedData, StandardCharsets.UTF_8)
 
+
                     if (receivedText.startsWith("{") && receivedText.endsWith("}")) {
                         try {
                             val deviceInfo = JSONObject(receivedText)
 
                             connectedClientDeviceName = deviceInfo.getString("deviceName")
+                            tempConnectedDeviceName =connectedClientDeviceName
                             println("Device Name: $connectedClientDeviceName")
 
                         } catch (e: JSONException) {
@@ -312,7 +339,7 @@ class MediaProjectionService : Service() {
                     }
 
                     if (totalSize > 0) {
-                        println("startAudioStreaming() - connectedClientIP: $connectedClientIP") // Add this line
+                        println("startAudioStreaming() - connectedClientIP: $connectedClientIP")
                         try {
                             val packet = DatagramPacket(
                                 mixBuffer,

@@ -231,7 +231,7 @@ class AudioStreamer(private val activity: ComponentActivity) {
                 val clientIP = mediaProjectionService?.getConnectedClientIP() ?: ""
                 val clientDeviceName = mediaProjectionService?.getConnectedClientDeviceName() ?: ""
 
-                _connectionStatus.value = if (clientIP.isNotEmpty()) {
+                _connectionStatus.value = if (clientIP.isNotEmpty() &&clientDeviceName.isNotEmpty()) {
                     "Streaming active \n$clientDeviceName \n($clientIP connected)"
                 } else {
                     "Streaming active \n(waiting for connection...)"
