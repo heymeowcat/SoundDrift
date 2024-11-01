@@ -3,10 +3,13 @@ Real-time Audio Streaming from Android to Your Desktop SoundDrift lets you strea
 
 <img src="https://github.com/user-attachments/assets/117ffebd-0cda-413a-8aa7-2a3f9da04fd5" width="300"/>
 
+## Usage
+Download the [Latest Release](https://github.com/heymeowcat/SoundDrift/releases/latest)
+
 ## Features
 
 1. **Low-Latency Streaming:** Experience minimal delay, perfect for real-time audio sharing. 
-2. **Metadata Display:** The client displays device information, latency, and buffer statistics for monitoring stream health. - 
+2. **Metadata Display:** The client displays device information, latency, and buffer statistics for monitoring stream health.
 3. **Microphone & Device Audio:** Stream from your microphone, device audio, or both simultaneously.
 4. **Individual Volume Control:** Adjust the volume of your microphone and device audio independently. 
 
@@ -18,8 +21,8 @@ This project consists of two components:
 
 ## Prerequisites 
 
-**Android Studio:** For building and running the Android app. 
-**Node.js and npm:** For installing Electron and its dependencies. 
+- **Android Studio:** For building and running the Android app. 
+- **Node.js and npm:** For installing Electron and its dependencies. 
 
 ## Installation 
 
