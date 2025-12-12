@@ -36,6 +36,8 @@ class MediaProjectionService : Service() {
     private var deviceAudioRecord: AudioRecord? = null
     private var recordingJob: Job? = null
     private var connectionMonitorJob: Job? = null
+    private var discoveryJob: Job? = null
+    private var udpServerJob: Job? = null
     private val binder = LocalBinder()
     private var isMicEnabled = AtomicBoolean(false)
     private var isDeviceAudioEnabled = AtomicBoolean(false)
@@ -166,7 +168,7 @@ class MediaProjectionService : Service() {
         }
 
         // Start UDP Server
-        recordingJob = CoroutineScope(Dispatchers.IO).launch {
+        udpServerJob = CoroutineScope(Dispatchers.IO).launch {
             try {
                 rtpSocket = DatagramSocket(55556)
                 println("UDP Server started on port 55556")
@@ -179,41 +181,138 @@ class MediaProjectionService : Service() {
                     println("Waiting for client connection...")
                     connectedClientIP = ""
                     connectedClientDeviceName = ""
-                    stopAudioRecording()
+
+                    // Don't stop recording here, it might be running from a previous session or we want to keep it ready
+                    // stopAudioRecording() 
 
                     // Receive the initial connection packet
-                    rtpSocket?.receive(receivePacket)
-                    connectedClientIP = receivePacket.address.hostAddress ?: ""
-                    println("UDP Client connected from: $connectedClientIP")
-
-                    // Now receive and process device info
-                    rtpSocket?.receive(receivePacket) // Receive device info
-                    val receivedData = receivePacket.data.copyOf(receivePacket.length)
-                    val receivedText = String(receivedData, StandardCharsets.UTF_8)
-
-
-                    if (receivedText.startsWith("{") && receivedText.endsWith("}")) {
-                        try {
-                            val deviceInfo = JSONObject(receivedText)
-
-                            connectedClientDeviceName = deviceInfo.getString("deviceName")
-                            tempConnectedDeviceName =connectedClientDeviceName
-                            println("Device Name: $connectedClientDeviceName")
-
-                        } catch (e: JSONException) {
-                            println("Error parsing device info JSON: ${e.message}")
+                    try {
+                        rtpSocket?.receive(receivePacket)
+                    } catch (e: Exception) {
+                        if (isActive) {
+                            println("UDP Receive error: ${e.message}")
+                            delay(1000)
                         }
-                    } else {
-                        println("Invalid device info format received.")
+                        continue
                     }
 
-                    lastPacketTime.set(System.currentTimeMillis())
-                    updateAudioRecording()
-                }
+                    val receivedMessage = String(receivePacket.data, 0, receivePacket.length, StandardCharsets.UTF_8)
+                    println("UDP received: '$receivedMessage' from ${receivePacket.address.hostAddress}:${receivePacket.port}")
 
+                    if (receivedMessage.contains("SoundDriftDisconnect")) {
+                         println("Received disconnect packet, ignoring as we are already waiting.")
+                         continue
+                    }
+
+                    // New Single-Packet Handshake Logic
+                    if (receivedMessage.startsWith("SoundDriftConnectionRequest")) {
+                        // Only accept connections if streaming is actually enabled
+                        if (!isMicEnabled.get() && !isDeviceAudioEnabled.get()) {
+                            println("Ignoring connection request - streaming is not enabled")
+                            continue
+                        }
+                        
+                        val parts = receivedMessage.split("|")
+                        if (parts.size >= 2) {
+                            val jsonString = parts.subList(1, parts.size).joinToString("|") // Rejoin just in case JSON has pipes
+                            try {
+                                val deviceInfo = JSONObject(jsonString)
+                                connectedClientDeviceName = deviceInfo.getString("deviceName")
+                                tempConnectedDeviceName = connectedClientDeviceName
+                                connectedClientIP = receivePacket.address.hostAddress ?: ""
+                                println("Device Name: $connectedClientDeviceName, IP: $connectedClientIP")
+                                
+                                println("Handshake complete. Starting stream to $connectedClientIP")
+                                withContext(Dispatchers.Main) {
+                                    updateAudioRecording()
+                                }
+                                
+                                // Wait for disconnect or error
+                                while (isActive && connectedClientIP.isNotEmpty()) {
+                                    val buffer = ByteArray(1024)
+                                    val packet = DatagramPacket(buffer, buffer.size)
+                                    try {
+                                        rtpSocket?.receive(packet)
+                                        val msg = String(packet.data, 0, packet.length, StandardCharsets.UTF_8)
+                                        if (msg.contains("SoundDriftDisconnect")) {
+                                            println("Client requested disconnect")
+                                            connectedClientIP = ""
+                                            break
+                                        }
+                                    } catch (e: Exception) {
+                                        if (!isActive) break
+                                    }
+                                }
+                            } catch (e: JSONException) {
+                                println("Invalid JSON in handshake: ${e.message}")
+                                connectedClientIP = ""
+                            }
+                        } else {
+                            println("Received connection header but missing JSON payload.")
+                        }
+                    } else {
+                        println("Ignoring unknown packet: $receivedMessage")
+                    }
+
+                    println("Session ended for $connectedClientIP")
+                    connectedClientIP = ""
+                    connectedClientDeviceName = ""
+                    lastPacketTime.set(0)
+                }
 
             } catch (e: Exception) {
                 e.printStackTrace()
+            }
+        }
+
+        startDiscoveryListener()
+    }
+
+    private fun startDiscoveryListener() {
+        discoveryJob = CoroutineScope(Dispatchers.IO).launch {
+            var discoverySocket: DatagramSocket? = null
+            try {
+                discoverySocket = DatagramSocket(55558)
+                discoverySocket.broadcast = true
+                println("Discovery listener started on port 55558")
+
+                val buffer = ByteArray(1024)
+                while (isActive) {
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    try {
+                        discoverySocket.receive(packet)
+                        val message = String(packet.data, 0, packet.length, StandardCharsets.UTF_8)
+
+                        if (message == "SoundDriftDiscovery") {
+                             println("Discovery probe received from ${packet.address.hostAddress}")
+
+                             // Only respond if we are actually checking/ready to stream
+                             if (isMicEnabled.get() || isDeviceAudioEnabled.get()) {
+                                 val responseJson = JSONObject().apply {
+                                     put("deviceName", Build.MODEL)
+                                     put("ip", NetworkUtils.getIPAddress(true)) // We need a helper for IP
+                                     put("type", "android-host")
+                                 }
+    
+                                 val responseData = responseJson.toString().toByteArray(StandardCharsets.UTF_8)
+                                 val responsePacket = DatagramPacket(
+                                     responseData,
+                                     responseData.size,
+                                     packet.address,
+                                     packet.port
+                                 )
+                                 discoverySocket.send(responsePacket)
+                                 println("Discovery response sent to ${packet.address.hostAddress}:${packet.port}")
+                             }
+                        }
+                    } catch (e: Exception) {
+                        println("Error in discovery loop: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                println("Could not bind discovery socket: ${e.message}")
+            } finally {
+                discoverySocket?.close()
             }
         }
     }
@@ -527,6 +626,10 @@ class MediaProjectionService : Service() {
 
     override fun onDestroy() {
         connectionMonitorJob?.cancel()
+        discoveryJob?.cancel()
+        udpServerJob?.cancel()
+        isMicEnabled.set(false)
+        isDeviceAudioEnabled.set(false)
         stopAudioRecording()
         mediaProjection?.stop()
         mediaProjection = null
