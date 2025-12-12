@@ -56,6 +56,7 @@ class MediaProjectionService : Service() {
 
     private val CHANNEL_ID = "SoundDriftServiceChannel"
     private val NOTIFICATION_ID = 1
+    private val ACTION_STOP = "com.heymeowcat.sounddrift.STOP_STREAMING"
     private val sampleRate = 44100
     private val channelConfig = AudioFormat.CHANNEL_IN_STEREO
     private val bufferSize = AudioRecord.getMinBufferSize(
@@ -66,9 +67,8 @@ class MediaProjectionService : Service() {
 
     fun getConnectedClientIP(): String = connectedClientIP
     fun getConnectedClientDeviceName(): String = connectedClientDeviceName
-
-
-
+    fun getIsMicEnabled(): Boolean = isMicEnabled.get()
+    fun getIsDeviceAudioEnabled(): Boolean = isDeviceAudioEnabled.get()
     fun setMicEnabled(enabled: Boolean) {
         isMicEnabled.set(enabled)
         updateAudioRecording()
@@ -214,35 +214,70 @@ class MediaProjectionService : Service() {
                         
                         val parts = receivedMessage.split("|")
                         if (parts.size >= 2) {
-                            val jsonString = parts.subList(1, parts.size).joinToString("|") // Rejoin just in case JSON has pipes
+                            val jsonString = parts.subList(1, parts.size).joinToString("|")
                             try {
                                 val deviceInfo = JSONObject(jsonString)
-                                connectedClientDeviceName = deviceInfo.getString("deviceName")
-                                tempConnectedDeviceName = connectedClientDeviceName
-                                connectedClientIP = receivePacket.address.hostAddress ?: ""
-                                println("Device Name: $connectedClientDeviceName, IP: $connectedClientIP")
+                                val newDeviceName = deviceInfo.getString("deviceName")
+                                val newClientIP = receivePacket.address.hostAddress ?: ""
                                 
+                                // Allow reconnection from same or different client
+                                if (connectedClientIP.isNotEmpty() && connectedClientIP != newClientIP) {
+                                    println("New client connecting, disconnecting previous: $connectedClientIP")
+                                }
+                                
+                                connectedClientDeviceName = newDeviceName
+                                tempConnectedDeviceName = connectedClientDeviceName
+                                connectedClientIP = newClientIP
+                                lastPacketTime.set(System.currentTimeMillis()) // Reset timeout on new handshake
+                                
+                                println("Device Name: $connectedClientDeviceName, IP: $connectedClientIP")
                                 println("Handshake complete. Starting stream to $connectedClientIP")
+                                
                                 withContext(Dispatchers.Main) {
                                     updateAudioRecording()
                                 }
                                 
-                                // Wait for disconnect or error
+                                // Set socket timeout so we don't block forever
+                                rtpSocket?.soTimeout = 3000 // 3 second timeout
+                                
+                                // Wait for disconnect, timeout, or new connection
                                 while (isActive && connectedClientIP.isNotEmpty()) {
                                     val buffer = ByteArray(1024)
                                     val packet = DatagramPacket(buffer, buffer.size)
                                     try {
                                         rtpSocket?.receive(packet)
                                         val msg = String(packet.data, 0, packet.length, StandardCharsets.UTF_8)
+                                        
                                         if (msg.contains("SoundDriftDisconnect")) {
                                             println("Client requested disconnect")
                                             connectedClientIP = ""
                                             break
+                                        } else if (msg.startsWith("SoundDriftConnectionRequest")) {
+                                            // New connection request - break to handle it in outer loop
+                                            println("New connection request received, reprocessing...")
+                                            // Put this packet back by setting receivedMessage
+                                            connectedClientIP = "" // Clear to break
+                                            // We'll handle the new request in the next iteration
+                                            break
                                         }
+                                    } catch (e: java.net.SocketTimeoutException) {
+                                        // Check if connection is still valid
+                                        val timeSinceLastPacket = System.currentTimeMillis() - lastPacketTime.get()
+                                        if (timeSinceLastPacket > CONNECTION_TIMEOUT) {
+                                            println("Connection timed out (no activity for ${CONNECTION_TIMEOUT}ms)")
+                                            connectedClientIP = ""
+                                            break
+                                        }
+                                        // Otherwise continue waiting
                                     } catch (e: Exception) {
                                         if (!isActive) break
+                                        println("Error in connection loop: ${e.message}")
                                     }
                                 }
+                                
+                                // Reset socket timeout for main receive
+                                rtpSocket?.soTimeout = 0
+                                
                             } catch (e: JSONException) {
                                 println("Invalid JSON in handshake: ${e.message}")
                                 connectedClientIP = ""
@@ -336,25 +371,52 @@ class MediaProjectionService : Service() {
 
     @RequiresApi(Build.VERSION_CODES.Q)
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Handle stop action from notification
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         val resultCode = intent?.getIntExtra("resultCode", 0) ?: 0
         val data = intent?.getParcelableExtra<Intent>("data")
 
         if (resultCode != 0 && data != null) {
             startForegroundService()
             startMediaProjection(resultCode, data)
-        } else {
+        } else if (intent?.action != ACTION_STOP) {
             stopSelf()
         }
         return START_STICKY
     }
 
     private fun startForegroundService() {
+        // Intent to open the app when notification is tapped
+        val openAppIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val openAppPendingIntent = PendingIntent.getActivity(
+            this, 0, openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Intent to stop streaming from notification
+        val stopIntent = Intent(this, MediaProjectionService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this, 1, stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("SoundDrift")
             .setContentText("Streaming audio...")
             .setSmallIcon(R.drawable.ic_stat_name)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setColor(ContextCompat.getColor(this, R.color.BlueGrey))
+            .setContentIntent(openAppPendingIntent)
+            .setOngoing(true)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop Streaming", stopPendingIntent)
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

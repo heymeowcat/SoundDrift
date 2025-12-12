@@ -57,9 +57,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Try to rebind to service if it's running
+        audioStreamer.tryRebindToService()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        audioStreamer.stopStreaming()
+        // Only unbind, don't stop the service - streaming continues in background
+        audioStreamer.unbindFromService()
     }
 }
 
@@ -205,12 +212,24 @@ class AudioStreamer(private val activity: ComponentActivity) {
             val binder = service as MediaProjectionService.LocalBinder
             mediaProjectionService = binder.getService()
 
-            // Configure the service with the current settings
-            mediaProjectionService?.apply {
-                setMicEnabled(_isMicEnabled.value)
-                setDeviceAudioEnabled(_isDeviceAudioEnabled.value)
-                setMicVolume(_micVolume.floatValue)
-                setDeviceVolume(_deviceVolume.floatValue)
+            // Check if this is a rebind (service already has state) or fresh start
+            val serviceHasActiveState = mediaProjectionService?.getIsMicEnabled() == true || 
+                                        mediaProjectionService?.getIsDeviceAudioEnabled() == true
+            
+            if (serviceHasActiveState) {
+                // Rebind case: sync state FROM the service
+                mediaProjectionService?.apply {
+                    _isMicEnabled.value = getIsMicEnabled()
+                    _isDeviceAudioEnabled.value = getIsDeviceAudioEnabled()
+                }
+            } else {
+                // Fresh start: push local state TO the service
+                mediaProjectionService?.apply {
+                    setMicEnabled(_isMicEnabled.value)
+                    setDeviceAudioEnabled(_isDeviceAudioEnabled.value)
+                    setMicVolume(_micVolume.floatValue)
+                    setDeviceVolume(_deviceVolume.floatValue)
+                }
             }
 
             _isStreaming.value = true
@@ -251,6 +270,8 @@ class AudioStreamer(private val activity: ComponentActivity) {
         mediaProjectionService?.setDeviceAudioEnabled(enabled)
     }
 
+    private var isBound = false
+
     fun startProjection(resultCode: Int, data: Intent) {
         val serviceIntent = Intent(activity, MediaProjectionService::class.java).apply {
             putExtra("resultCode", resultCode)
@@ -263,6 +284,38 @@ class AudioStreamer(private val activity: ComponentActivity) {
             serviceConnection,
             Context.BIND_AUTO_CREATE
         )
+        isBound = true
+    }
+
+    fun tryRebindToService() {
+        // Only try to bind if service is already running (don't auto-create)
+        if (!isBound && !_isStreaming.value) {
+            try {
+                // Use 0 instead of BIND_AUTO_CREATE to only bind if already running
+                val bound = activity.bindService(
+                    Intent(activity, MediaProjectionService::class.java),
+                    serviceConnection,
+                    0  // Don't create service, only bind if running
+                )
+                if (bound) {
+                    isBound = true
+                }
+            } catch (e: Exception) {
+                // Service not running, that's fine
+            }
+        }
+    }
+
+    fun unbindFromService() {
+        if (isBound) {
+            try {
+                activity.unbindService(serviceConnection)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            isBound = false
+            updateJob?.cancel()
+        }
     }
 
     fun stopStreaming() {
@@ -272,6 +325,7 @@ class AudioStreamer(private val activity: ComponentActivity) {
             } catch (e: Exception) {
                 e.printStackTrace()
             }
+            isBound = false
 
             activity.stopService(Intent(activity, MediaProjectionService::class.java))
             updateJob?.cancel()
@@ -479,6 +533,22 @@ fun MainScreen(
             }
 
 
+        }
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        // Download desktop client link
+        TextButton(
+            onClick = {
+                val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://heymeowcat.is-a.dev/SoundDrift-site/#download"))
+                context.startActivity(intent)
+            }
+        ) {
+            Text(
+                "Download Desktop Client",
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodyMedium
+            )
         }
     }
 }
